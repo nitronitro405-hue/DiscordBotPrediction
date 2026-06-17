@@ -20,14 +20,6 @@ except AttributeError:
 message_map = {}
 last_content = {}
 
-STREAMING_STATUSES = [
-    "Predicting restocks...",
-    "Watching seed prices",
-    "Monitoring the market",
-]
-
-status_index = 0
-
 def embed_to_text(embed):
     data = embed.to_dict() if hasattr(embed, 'to_dict') else embed
     lines = []
@@ -63,24 +55,16 @@ def get_message_text(message):
         return embed_to_text(message.embeds[0])
     return message.content
 
-@tasks.loop(seconds=30)
-async def cycle_status():
-    global status_index
-    status = STREAMING_STATUSES[status_index % len(STREAMING_STATUSES)]
-    status_index += 1
-    activity = discord.Activity(type=discord.ActivityType.streaming, name=status)
-    await bot.change_presence(activity=activity)
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
     
-    # Set initial streaming status
-    activity = discord.Activity(type=discord.ActivityType.streaming, name="Predicting restocks...")
-    await bot.change_presence(activity=activity)
-    
-    # Start cycling status every 30 seconds
-    cycle_status.start()
+    # Try setting status, silently fail if not supported
+    try:
+        activity = discord.Activity(type=discord.ActivityType.playing, name="Predicting restocks...")
+        await bot.change_presence(activity=activity)
+    except:
+        pass
     
     source = bot.get_channel(SOURCE_CHANNEL_ID)
     target = bot.get_channel(TARGET_CHANNEL_ID)
