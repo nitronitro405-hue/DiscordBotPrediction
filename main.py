@@ -5,13 +5,17 @@ import asyncio
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SOURCE_CHANNEL_ID = 1515729737367031828
-TARGET_CHANNEL_ID = 1516876226562752662
+TARGET_CHANNEL_ID = 1516526798102466651
 TARGET_USER_ID = 1515735234237300787
 
 BACKFILL_COUNT = 10
 
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", self_bot=True, intents=intents)
+# Handle both discord.py and discord.py-self
+try:
+    intents = discord.Intents.default()
+    bot = commands.Bot(command_prefix="!", self_bot=True, intents=intents)
+except AttributeError:
+    bot = commands.Bot(command_prefix="!", self_bot=True)
 
 message_map = {}
 last_content = {}
