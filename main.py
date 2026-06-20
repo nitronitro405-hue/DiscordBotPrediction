@@ -1,6 +1,5 @@
 import os
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 import asyncio
 import re
@@ -21,11 +20,9 @@ except AttributeError:
 message_map = {}
 last_content = {}
 
-# Store latest stock data from the source
 latest_stock = {}
 
 def parse_stock_data(message):
-    """Parse stock data from a message and store it"""
     if not message.embeds:
         return
     
@@ -40,13 +37,10 @@ def parse_stock_data(message):
         field_name = field.get("name", "")
         field_value = field.get("value", "")
         
-        # Extract timestamps from field name/ value
         timestamps = re.findall(r'<t:(\d+):[RrTtDdFf]>', field_name + " " + field_value)
         best_ts = timestamps[0] if timestamps else None
         
-        # Extract item names from the value
         for line in field_value.split('\n'):
-            # Match patterns like "**Item Name**  `x5`  ·  `10¢`  ·  Common"
             item_match = re.match(r'\*\*(.+?)\*\*', line)
             if item_match:
                 item_name = item_match.group(1).strip()
@@ -112,7 +106,6 @@ async def on_ready():
     source = bot.get_channel(SOURCE_CHANNEL_ID)
     target = bot.get_channel(TARGET_CHANNEL_ID)
 
-    # First pass: build stock data from recent messages
     print("Loading stock data...")
     async for message in source.history(limit=50):
         if message.author.id == TARGET_USER_ID and message.embeds:
@@ -120,7 +113,6 @@ async def on_ready():
     
     print(f"Loaded {len(latest_stock)} shops")
 
-    # Then backfill
     print(f"Backfilling last {BACKFILL_COUNT} messages...")
     count = 0
     async for message in source.history(limit=BACKFILL_COUNT):
@@ -134,27 +126,15 @@ async def on_ready():
         await asyncio.sleep(0.5)
     
     print(f"Backfilled {count} messages")
-    
-    # Sync slash commands
-    try:
-        await bot.tree.sync()
-        print("Slash commands synced")
-    except:
-        pass
-    
     check_edits.start()
-    print("Ready")
+    print("Ready - try !when ShopName ItemName")
 
-@bot.tree.command(name="when", description="Check when an item restocks")
-@app_commands.describe(
-    shop="The shop name (e.g. SeedShop, Gear Shop)",
-    item="The item name (e.g. Carrot Seed, Sprinkler)"
-)
-async def when(interaction: discord.Interaction, shop: str, item: str):
+@bot.command()
+async def when(ctx, shop: str, *, item: str):
+    """Check when an item restocks. Usage: !when ShopName ItemName"""
     shop_key = shop.lower().replace(" ", "")
     item_key = item.lower()
     
-    # Try to find the shop
     found_shop = None
     for key, shop_data in latest_stock.items():
         if shop_key in key or key in shop_key:
@@ -162,10 +142,9 @@ async def when(interaction: discord.Interaction, shop: str, item: str):
             break
     
     if not found_shop:
-        await interaction.response.send_message(f"❌ Shop '{shop}' not found. Available: {', '.join(latest_stock.keys())}", ephemeral=True)
+        await ctx.send(f"❌ Shop '{shop}' not found. Available: {', '.join(s['name'] for s in latest_stock.values())}")
         return
     
-    # Try to find the item
     found_item = None
     for key, item_data in found_shop["items"].items():
         if item_key in key or key in item_key:
@@ -173,37 +152,24 @@ async def when(interaction: discord.Interaction, shop: str, item: str):
             break
     
     if not found_item:
-        # Show available items
         items_list = "\n".join([f"• {i['name']}" for i in found_shop["items"].values()])
-        await interaction.response.send_message(
-            f"❌ Item '{item}' not found in {found_shop['name']}.\n**Available items:**\n{items_list}",
-            ephemeral=True
-        )
+        await ctx.send(f"❌ Item '{item}' not found in {found_shop['name']}.\n**Available items:**\n{items_list}")
         return
     
-    # Get timestamp
     ts = found_item.get("timestamp")
     
     if ts:
-        await interaction.response.send_message(
-            f"✅ **{found_item['name']}** stocks in <t:{ts}:R> (<t:{ts}:f>)"
-        )
+        await ctx.send(f"✅ **{found_item['name']}** stocks in <t:{ts}:R>")
     else:
-        # Try to find any timestamp in the shop fields
         all_ts = []
         for field in found_shop["fields"]:
             all_ts.extend(re.findall(r'<t:(\d+):[RrTtDdFf]>', field.get("name", "") + " " + field.get("value", "")))
         
         if all_ts:
             best_ts = all_ts[0]
-            await interaction.response.send_message(
-                f"✅ **{found_item['name']}** stocks in <t:{best_ts}:R>"
-            )
+            await ctx.send(f"✅ **{found_item['name']}** stocks in <t:{best_ts}:R>")
         else:
-            await interaction.response.send_message(
-                f"ℹ️ **{found_item['name']}** is available now in {found_shop['name']}!\n{found_item['raw']}",
-                ephemeral=True
-            )
+            await ctx.send(f"ℹ️ **{found_item['name']}** is available now in {found_shop['name']}!")
 
 @tasks.loop(seconds=1)
 async def check_edits():
@@ -239,6 +205,9 @@ async def check_edits():
 
 @bot.event
 async def on_message(message):
+    # Let commands process first
+    await bot.process_commands(message)
+    
     if message.author.id != TARGET_USER_ID:
         return
     if message.channel.id != SOURCE_CHANNEL_ID:
