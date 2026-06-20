@@ -22,6 +22,29 @@ last_content = {}
 
 latest_stock = {}
 
+def parse_items_from_text(text):
+    """Extract item names and timestamps from field text"""
+    items = {}
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Find timestamps
+        timestamps = re.findall(r'<t:(\d+):[RrTtDdFf]>', line)
+        best_ts = timestamps[0] if timestamps else None
+        
+        # Try to extract item name - look for **name** pattern first
+        item_match = re.match(r'\*\*(.+?)\*\*', line)
+        if item_match:
+            item_name = item_match.group(1).strip()
+            items[item_name.lower()] = {
+                "name": item_name,
+                "raw": line,
+                "timestamp": best_ts
+            }
+    return items
+
 def parse_stock_data(message):
     if not message.embeds:
         return
@@ -30,25 +53,32 @@ def parse_stock_data(message):
     data = embed.to_dict() if hasattr(embed, 'to_dict') else embed
     
     shop_name = data.get("title", "Unknown Shop")
+    desc = data.get("description", "")
     fields = data.get("fields", [])
     
     items = {}
+    
+    # Parse description for timestamps
+    desc_timestamps = re.findall(r'<t:(\d+):[RrTtDdFf]>', desc)
+    global_ts = desc_timestamps[0] if desc_timestamps else None
+    
     for field in fields:
         field_name = field.get("name", "")
         field_value = field.get("value", "")
         
-        timestamps = re.findall(r'<t:(\d+):[RrTtDdFf]>', field_name + " " + field_value)
-        best_ts = timestamps[0] if timestamps else None
+        # Get timestamps from field name
+        field_ts_list = re.findall(r'<t:(\d+):[RrTtDdFf]>', field_name)
+        field_ts = field_ts_list[0] if field_ts_list else global_ts
         
-        for line in field_value.split('\n'):
-            item_match = re.match(r'\*\*(.+?)\*\*', line)
-            if item_match:
-                item_name = item_match.group(1).strip()
-                items[item_name.lower()] = {
-                    "name": item_name,
-                    "raw": line,
-                    "timestamp": best_ts
-                }
+        # Parse items from this field
+        field_items = parse_items_from_text(field_value)
+        
+        # If items don't have their own timestamp, use the field's timestamp
+        for key, item_data in field_items.items():
+            if not item_data["timestamp"]:
+                item_data["timestamp"] = field_ts
+        
+        items.update(field_items)
     
     latest_stock[shop_name.lower()] = {
         "name": shop_name,
@@ -56,6 +86,8 @@ def parse_stock_data(message):
         "fields": fields,
         "raw_data": data
     }
+    
+    print(f"Parsed {shop_name}: {len(items)} items")
 
 def embed_to_text(embed):
     data = embed.to_dict() if hasattr(embed, 'to_dict') else embed
@@ -112,6 +144,8 @@ async def on_ready():
             parse_stock_data(message)
     
     print(f"Loaded {len(latest_stock)} shops")
+    for shop_name in latest_stock:
+        print(f"  - {latest_stock[shop_name]['name']}: {len(latest_stock[shop_name]['items'])} items")
 
     print(f"Backfilling last {BACKFILL_COUNT} messages...")
     count = 0
@@ -127,49 +161,52 @@ async def on_ready():
     
     print(f"Backfilled {count} messages")
     check_edits.start()
-    print("Ready - try !when ShopName ItemName")
+    print("Ready - try: !when Gear Shop Watering Can")
 
 @bot.command()
-async def when(ctx, shop: str, *, item: str):
-    """Check when an item restocks. Usage: !when ShopName ItemName"""
-    shop_key = shop.lower().replace(" ", "")
-    item_key = item.lower()
+async def when(ctx, *, query: str):
+    """Check when an item restocks. Usage: !when <item name>"""
+    query_lower = query.lower().strip()
     
-    found_shop = None
-    for key, shop_data in latest_stock.items():
-        if shop_key in key or key in shop_key:
-            found_shop = shop_data
-            break
+    # Search all shops for the item
+    found_results = []
     
-    if not found_shop:
-        await ctx.send(f"❌ Shop '{shop}' not found. Available: {', '.join(s['name'] for s in latest_stock.values())}")
-        return
+    for shop_key, shop_data in latest_stock.items():
+        for item_key, item_data in shop_data["items"].items():
+            if query_lower in item_key or item_key in query_lower:
+                found_results.append((shop_data["name"], item_data))
     
-    found_item = None
-    for key, item_data in found_shop["items"].items():
-        if item_key in key or key in item_key:
-            found_item = item_data
-            break
-    
-    if not found_item:
-        items_list = "\n".join([f"• {i['name']}" for i in found_shop["items"].values()])
-        await ctx.send(f"❌ Item '{item}' not found in {found_shop['name']}.\n**Available items:**\n{items_list}")
-        return
-    
-    ts = found_item.get("timestamp")
-    
-    if ts:
-        await ctx.send(f"✅ **{found_item['name']}** stocks in <t:{ts}:R>")
-    else:
-        all_ts = []
-        for field in found_shop["fields"]:
-            all_ts.extend(re.findall(r'<t:(\d+):[RrTtDdFf]>', field.get("name", "") + " " + field.get("value", "")))
+    if not found_results:
+        # List all available items
+        all_items = []
+        for shop_data in latest_stock.values():
+            for item_data in shop_data["items"].values():
+                all_items.append(f"• {item_data['name']} ({shop_data['name']})")
         
-        if all_ts:
-            best_ts = all_ts[0]
-            await ctx.send(f"✅ **{found_item['name']}** stocks in <t:{best_ts}:R>")
+        items_preview = "\n".join(all_items[:20])
+        if len(all_items) > 20:
+            items_preview += f"\n...and {len(all_items) - 20} more"
+        
+        await ctx.send(f"❌ Item '{query}' not found.\n**Available items:**\n{items_preview}")
+        return
+    
+    # Return results
+    if len(found_results) == 1:
+        shop_name, item = found_results[0]
+        ts = item.get("timestamp")
+        if ts:
+            await ctx.send(f"✅ **{item['name']}** stocks in <t:{ts}:R> (<t:{ts}:f>)")
         else:
-            await ctx.send(f"ℹ️ **{found_item['name']}** is available now in {found_shop['name']}!")
+            await ctx.send(f"ℹ️ **{item['name']}** is in stock now at **{shop_name}**!")
+    else:
+        # Multiple matches - show all
+        lines = [f"🔍 Found {len(found_results)} matches for '{query}':"]
+        for shop_name, item in found_results:
+            ts = item.get("timestamp")
+            time_str = f"<t:{ts}:R>" if ts else "Now"
+            lines.append(f"• **{item['name']}** ({shop_name}) — {time_str}")
+        
+        await ctx.send("\n".join(lines))
 
 @tasks.loop(seconds=1)
 async def check_edits():
